@@ -146,6 +146,28 @@ export interface RelationshipEdge {
   type: 'PARENT' | 'CHILD' | 'SPOUSE' | 'SIBLING'
 }
 
+export interface PersonRelations {
+  personId: string
+  personName: string
+  primaryPhotoUrl?: string
+  parents?: PersonSummary[]
+  spouses?: PersonSummary[]
+  children?: PersonSummary[]
+  siblings?: PersonSummary[]
+}
+
+export interface PersonSummary {
+  id: string
+  fullName: string
+  firstName?: string
+  lastName?: string
+  gender?: string
+  birthDate?: string
+  deathDate?: string
+  primaryPhotoUrl?: string
+  relationType?: string
+}
+
 export interface LoginRequest {
   phone: string
   password: string

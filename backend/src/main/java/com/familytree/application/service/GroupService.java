@@ -15,12 +15,13 @@ import java.util.stream.Collectors;
 @Service
 @RequiredArgsConstructor
 public class GroupService {
-    
+
     private final GroupRepository groupRepository;
     private final GroupMemberRepository groupMemberRepository;
     private final GroupPrivacySettingsRepository privacySettingsRepository;
     private final PersonRepository personRepository;
     private final UserRepository userRepository;
+    private final RelationshipRepository relationshipRepository;
     
     @Transactional
     public GroupDTO createGroup(UUID userId, CreateGroupRequest request) {
@@ -106,7 +107,76 @@ public class GroupService {
     public boolean isGroupAdmin(UUID groupId, UUID userId) {
         return groupMemberRepository.existsByGroupIdAndUserIdAndRole(groupId, userId, GroupMember.Role.ADMIN);
     }
-    
+
+    @Transactional
+    public Relationship createRelationship(UUID groupId, UUID userId,
+            com.familytree.application.dto.request.CreateRelationshipRequest request) {
+        // 验证用户是家族成员
+        if (!groupMemberRepository.existsByGroupIdAndUserId(groupId, userId)) {
+            throw new RuntimeException("您没有权限操作该家族");
+        }
+
+        // 验证家族存在
+        groupRepository.findById(groupId)
+                .orElseThrow(() -> new RuntimeException("家族不存在"));
+
+        // 验证人物存在且属于该家族
+        Person fromPerson = personRepository.findById(request.getFromPersonId())
+                .orElseThrow(() -> new RuntimeException("来源人物不存在"));
+        Person toPerson = personRepository.findById(request.getToPersonId())
+                .orElseThrow(() -> new RuntimeException("目标人物不存在"));
+
+        if (!fromPerson.getGroupId().equals(groupId) || !toPerson.getGroupId().equals(groupId)) {
+            throw new RuntimeException("人物不属于该家族");
+        }
+
+        UUID normalizedFromPersonId = request.getFromPersonId();
+        UUID normalizedToPersonId = request.getToPersonId();
+        Relationship.RelationshipType normalizedType = request.getType();
+
+        // 统一存储规则：父子关系统一使用 PARENT（from=父母, to=子女）
+        if (request.getType() == Relationship.RelationshipType.PARENT) {
+            normalizedFromPersonId = request.getToPersonId();
+            normalizedToPersonId = request.getFromPersonId();
+            normalizedType = Relationship.RelationshipType.PARENT;
+        } else if (request.getType() == Relationship.RelationshipType.CHILD) {
+            normalizedType = Relationship.RelationshipType.PARENT;
+        }
+
+        if (normalizedFromPersonId.equals(normalizedToPersonId)) {
+            throw new RuntimeException("不能给自己创建关系");
+        }
+
+        Relationship.RelationshipType finalType = normalizedType;
+        boolean exists;
+        if (finalType == Relationship.RelationshipType.SPOUSE
+                || finalType == Relationship.RelationshipType.SIBLING) {
+            exists = relationshipRepository.findBetweenPersons(groupId, normalizedFromPersonId, normalizedToPersonId)
+                    .stream()
+                    .anyMatch(r -> r.getType() == finalType);
+        } else {
+            exists = relationshipRepository
+                    .findByGroupIdAndFromPersonIdAndToPersonIdAndType(
+                            groupId, normalizedFromPersonId, normalizedToPersonId, finalType)
+                    .isPresent();
+        }
+        if (exists) {
+            throw new RuntimeException("关系已存在");
+        }
+
+        // 创建关系
+        Relationship relationship = Relationship.builder()
+                .groupId(groupId)
+                .fromPersonId(normalizedFromPersonId)
+                .toPersonId(normalizedToPersonId)
+                .type(finalType)
+                .startDate(request.getStartDate())
+                .endDate(request.getEndDate())
+                .build();
+
+        return relationshipRepository.save(relationship);
+    }
+
     private GroupDTO toDTO(Group group) {
         long memberCount = groupMemberRepository.countByGroupId(group.getId());
         long personCount = personRepository.countByGroupId(group.getId());

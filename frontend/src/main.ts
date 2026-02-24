@@ -32,7 +32,8 @@ import {
   GridItem,
   Image,
   Uploader,
-  DatetimePicker,
+  DatePicker,
+  TimePicker,
   Picker,
   Loading,
   Skeleton,
@@ -85,7 +86,8 @@ app.use(Grid)
 app.use(GridItem)
 app.use(Image)
 app.use(Uploader)
-app.use(DatetimePicker)
+app.use(DatePicker)
+app.use(TimePicker)
 app.use(Picker)
 app.use(Loading)
 app.use(Skeleton)

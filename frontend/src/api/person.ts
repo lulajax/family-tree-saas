@@ -1,5 +1,5 @@
 import request from './request'
-import type { Person } from '@/types'
+import type { Person, PersonRelations } from '@/types'
 
 export interface CreatePersonRequest {
   groupId: string
@@ -45,5 +45,9 @@ export const personApi = {
   
   searchPersons: (groupId: string, keyword: string): Promise<Person[]> => {
     return request.get(`/persons/group/${groupId}/search`, { params: { keyword } })
+  },
+
+  getPersonRelations: (personId: string): Promise<PersonRelations> => {
+    return request.get(`/persons/${personId}/relations`)
   }
 }

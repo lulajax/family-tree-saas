@@ -77,6 +77,20 @@
         </div>
         <van-cell v-else title="暂无照片" />
       </van-cell-group>
+
+      <!-- 删除操作 -->
+      <div class="delete-section">
+        <van-button
+          block
+          round
+          type="danger"
+          icon="delete-o"
+          @click="onDeletePerson"
+        >
+          删除人物
+        </van-button>
+        <p class="delete-tip">删除后将无法恢复，请谨慎操作</p>
+      </div>
     </template>
     
     <van-empty v-else description="人物不存在" />
@@ -86,7 +100,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { showToast, showImagePreview } from 'vant'
+import { showToast, showImagePreview, showDialog, showLoadingToast, closeToast } from 'vant'
 import { personApi } from '@/api'
 import type { Person } from '@/types'
 
@@ -134,6 +148,30 @@ const goToEdit = () => {
 
 const previewPhoto = (url: string) => {
   showImagePreview([url])
+}
+
+const onDeletePerson = () => {
+  showDialog({
+    title: '确认删除',
+    message: `确定要删除 ${person.value?.fullName || '该人物'} 吗？删除后将无法恢复。`,
+    showCancelButton: true,
+    confirmButtonText: '删除',
+    confirmButtonColor: '#ee0a24'
+  }).then(async () => {
+    try {
+      showLoadingToast({ message: '删除中...', forbidClick: true })
+      await personApi.deletePerson(personId)
+      closeToast()
+      showToast('删除成功')
+      // 返回上一页
+      router.back()
+    } catch (error) {
+      closeToast()
+      showToast('删除失败')
+    }
+  }).catch(() => {
+    // 用户取消，不做任何操作
+  })
 }
 
 onMounted(() => {
@@ -189,5 +227,17 @@ onMounted(() => {
   grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
   gap: 8px;
   padding: 12px;
+}
+
+.delete-section {
+  margin: 24px 16px;
+  padding-bottom: 24px;
+}
+
+.delete-tip {
+  text-align: center;
+  font-size: 12px;
+  color: #999;
+  margin-top: 8px;
 }
 </style>

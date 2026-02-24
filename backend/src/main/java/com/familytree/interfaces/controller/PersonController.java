@@ -1,6 +1,7 @@
 package com.familytree.interfaces.controller;
 
 import com.familytree.application.dto.PersonDTO;
+import com.familytree.application.dto.PersonRelationsDTO;
 import com.familytree.application.dto.request.CreatePersonRequest;
 import com.familytree.application.dto.request.UpdatePersonRequest;
 import com.familytree.application.dto.response.ApiResponse;
@@ -66,5 +67,13 @@ public class PersonController {
             @PathVariable UUID groupId,
             @RequestParam String keyword) {
         return ApiResponse.success(personService.searchPersons(groupId, keyword));
+    }
+
+    @GetMapping("/{personId}/relations")
+    @Operation(summary = "获取人员关系详情", description = "返回某人的父母、配偶、子女、兄弟姐妹列表")
+    public ApiResponse<PersonRelationsDTO> getPersonRelations(
+            @PathVariable UUID personId,
+            @CurrentUser UUID userId) {
+        return ApiResponse.success(personService.getPersonRelations(personId, userId));
     }
 }

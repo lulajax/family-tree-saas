@@ -1,12 +1,14 @@
 package com.familytree.application.service;
 
 import com.familytree.application.dto.PersonDTO;
+import com.familytree.application.dto.PersonRelationsDTO;
 import com.familytree.application.dto.PhotoDTO;
 import com.familytree.application.dto.request.CreatePersonRequest;
 import com.familytree.application.dto.request.UpdatePersonRequest;
 import com.familytree.domain.Person;
 import com.familytree.domain.Photo;
 import com.familytree.domain.Relationship;
+import com.familytree.infrastructure.repository.GroupMemberRepository;
 import com.familytree.infrastructure.repository.PersonRepository;
 import com.familytree.infrastructure.repository.PhotoRepository;
 import com.familytree.infrastructure.repository.RelationshipRepository;
@@ -25,6 +27,7 @@ public class PersonService {
     private final PersonRepository personRepository;
     private final PhotoRepository photoRepository;
     private final RelationshipRepository relationshipRepository;
+    private final GroupMemberRepository groupMemberRepository;
     
     @Transactional
     public PersonDTO createPerson(UUID userId, CreatePersonRequest request) {
@@ -180,5 +183,92 @@ public class PersonService {
             .isPrimary(photo.getIsPrimary())
             .createdAt(photo.getCreatedAt())
             .build();
+    }
+
+    /**
+     * 获取人员关系详情
+     * 返回某人的父母、配偶、子女、兄弟姐妹列表（包含完整信息）
+     */
+    @Transactional(readOnly = true)
+    public PersonRelationsDTO getPersonRelations(UUID personId, UUID currentUserId) {
+        Person person = personRepository.findById(personId)
+            .orElseThrow(() -> new RuntimeException("人物不存在"));
+
+        // 检查用户是否有权限查看该家族的人员（必须是家族成员）
+        boolean isMember = groupMemberRepository.existsByGroupIdAndUserId(person.getGroupId(), currentUserId);
+        if (!isMember) {
+            throw new RuntimeException("您没有权限查看此人员信息");
+        }
+
+        // 获取该人物的所有关系
+        List<Relationship> relationships = relationshipRepository.findByPersonId(person.getGroupId(), personId);
+
+        // 获取父母ID
+        List<UUID> parentIds = relationships.stream()
+            .filter(r -> r.getType() == Relationship.RelationshipType.PARENT && r.getToPersonId().equals(personId))
+            .map(Relationship::getFromPersonId)
+            .collect(Collectors.toList());
+
+        // 获取子女ID
+        List<UUID> childrenIds = relationships.stream()
+            .filter(r -> r.getType() == Relationship.RelationshipType.PARENT && r.getFromPersonId().equals(personId))
+            .map(Relationship::getToPersonId)
+            .collect(Collectors.toList());
+
+        // 获取配偶ID
+        List<UUID> spouseIds = relationships.stream()
+            .filter(r -> r.getType() == Relationship.RelationshipType.SPOUSE)
+            .map(r -> r.getFromPersonId().equals(personId) ? r.getToPersonId() : r.getFromPersonId())
+            .collect(Collectors.toList());
+
+        // 获取兄弟姐妹：通过共同的父母
+        List<UUID> siblingIds = parentIds.stream()
+            .flatMap(parentId -> {
+                // 找到该父母的所有子女
+                return relationships.stream()
+                    .filter(r -> r.getType() == Relationship.RelationshipType.PARENT
+                        && r.getFromPersonId().equals(parentId)
+                        && !r.getToPersonId().equals(personId))
+                    .map(Relationship::getToPersonId);
+            })
+            .distinct()
+            .collect(Collectors.toList());
+
+        // 构建返回DTO
+        Photo primaryPhoto = photoRepository.findByPersonIdAndIsPrimaryTrue(personId).orElse(null);
+
+        return PersonRelationsDTO.builder()
+            .personId(personId)
+            .personName(person.getFullName())
+            .primaryPhotoUrl(primaryPhoto != null ? primaryPhoto.getUrl() : null)
+            .parents(toSummaryList(parentIds, "PARENT"))
+            .spouses(toSummaryList(spouseIds, "SPOUSE"))
+            .children(toSummaryList(childrenIds, "CHILD"))
+            .siblings(toSummaryList(siblingIds, "SIBLING"))
+            .build();
+    }
+
+    /**
+     * 将人员ID列表转换为摘要DTO列表
+     */
+    private List<PersonRelationsDTO.PersonSummaryDTO> toSummaryList(List<UUID> personIds, String relationType) {
+        return personIds.stream()
+            .map(id -> personRepository.findById(id).orElse(null))
+            .filter(p -> p != null)
+            .map(p -> {
+                Photo photo = photoRepository.findByPersonIdAndIsPrimaryTrue(p.getId()).orElse(null);
+                return PersonRelationsDTO.PersonSummaryDTO.builder()
+                    .id(p.getId())
+                    .fullName(p.getFullName())
+                    .firstName(p.getFirstName())
+                    .lastName(p.getLastName())
+                    .gender(p.getGender() != null ? p.getGender().name() : "UNKNOWN")
+                    .birthDate(p.getBirthDate() != null ? p.getBirthDate().toString() : null)
+                    .deathDate(p.getDeathDate() != null ? p.getDeathDate().toString() : null)
+                    .primaryPhotoUrl(photo != null ? photo.getUrl() : null)
+                    .relationType(relationType)
+                    .build();
+            })
+            .collect(Collectors.toList());
     }
 }

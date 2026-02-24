@@ -2,8 +2,10 @@ package com.familytree.interfaces.controller;
 
 import com.familytree.application.dto.GroupDTO;
 import com.familytree.application.dto.request.CreateGroupRequest;
+import com.familytree.application.dto.request.CreateRelationshipRequest;
 import com.familytree.application.dto.response.ApiResponse;
 import com.familytree.application.service.GroupService;
+import com.familytree.domain.Relationship;
 import com.familytree.infrastructure.security.CurrentUser;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
@@ -60,5 +62,14 @@ public class GroupController {
             @PathVariable UUID groupId) {
         groupService.leaveGroup(userId, groupId);
         return ApiResponse.success();
+    }
+
+    @PostMapping("/{groupId}/relationships")
+    @Operation(summary = "创建关系")
+    public ApiResponse<Relationship> createRelationship(
+            @CurrentUser UUID userId,
+            @PathVariable UUID groupId,
+            @Valid @RequestBody CreateRelationshipRequest request) {
+        return ApiResponse.success(groupService.createRelationship(groupId, userId, request));
     }
 }

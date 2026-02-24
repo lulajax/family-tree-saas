@@ -13,6 +13,7 @@ import java.util.UUID;
 @NoArgsConstructor
 @AllArgsConstructor
 public class TreeViewDTO {
+    private UUID groupId;
     private UUID focusPersonId;
     private String focusPersonName;
     private Integer depth;
