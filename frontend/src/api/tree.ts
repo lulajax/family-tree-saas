@@ -1,10 +1,10 @@
 import request from './request'
-import type { TreeView, PersonNode } from '@/types'
+import type { TreeView, PersonNode, LineageType } from '@/types'
 
 export const treeApi = {
-  getTreeView: (groupId: string, focusPersonId?: string, depth: number = 3): Promise<TreeView> => {
+  getTreeView: (groupId: string, focusPersonId?: string, depth: number = 3, lineage?: LineageType): Promise<TreeView> => {
     return request.get(`/groups/${groupId}/tree`, {
-      params: { focusPersonId, depth }
+      params: { focusPersonId, depth, lineage }
     })
   },
   

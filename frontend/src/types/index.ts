@@ -117,10 +117,45 @@ export interface MergeRequest {
   updatedAt: string
 }
 
+export type LineageType = 'FATHER_LINE' | 'MOTHER_LINE' | 'SELF' | 'UNKNOWN'
+
+export interface LineageFilter {
+  type: LineageType | 'BOTH'
+  label: string
+  color: string
+  borderColor: string
+  bgColor: string
+}
+
+export const LINEAGE_FILTERS: LineageFilter[] = [
+  {
+    type: 'BOTH',
+    label: '全部',
+    color: '#666',
+    borderColor: '#9ca3af',
+    bgColor: '#f3f4f6'
+  },
+  {
+    type: 'FATHER_LINE',
+    label: '父系',
+    color: '#1e40af',
+    borderColor: '#2563eb',
+    bgColor: '#dbeafe'
+  },
+  {
+    type: 'MOTHER_LINE',
+    label: '母系',
+    color: '#be185d',
+    borderColor: '#ec4899',
+    bgColor: '#fce7f3'
+  }
+]
+
 export interface TreeView {
   focusPersonId: string
   focusPersonName: string
   depth: number
+  filterLineageType?: LineageType
   nodes: PersonNode[]
   edges: RelationshipEdge[]
 }
@@ -137,6 +172,7 @@ export interface PersonNode {
   generation: number
   x?: number
   y?: number
+  lineageType: LineageType
 }
 
 export interface RelationshipEdge {

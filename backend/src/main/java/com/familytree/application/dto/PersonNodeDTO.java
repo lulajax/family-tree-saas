@@ -1,5 +1,6 @@
 package com.familytree.application.dto;
 
+import com.familytree.domain.LineageType;
 import com.familytree.domain.Person;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -25,4 +26,5 @@ public class PersonNodeDTO {
     private Integer generation; // 相对于焦点人物的代数
     private Double x; // 用于布局的坐标
     private Double y;
+    private LineageType lineageType; // 相对于焦点人物的血统线类型
 }

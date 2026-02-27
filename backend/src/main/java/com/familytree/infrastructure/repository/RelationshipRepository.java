@@ -32,6 +32,12 @@ public interface RelationshipRepository extends JpaRepository<Relationship, UUID
     
     Optional<Relationship> findByGroupIdAndFromPersonIdAndToPersonIdAndType(
         UUID groupId, UUID fromPersonId, UUID toPersonId, Relationship.RelationshipType type);
+
+    List<Relationship> findByGroupIdAndFromPersonIdAndType(
+        UUID groupId, UUID fromPersonId, Relationship.RelationshipType type);
+
+    List<Relationship> findByGroupIdAndToPersonIdAndType(
+        UUID groupId, UUID toPersonId, Relationship.RelationshipType type);
     
     long countByGroupId(UUID groupId);
 }

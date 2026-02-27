@@ -59,6 +59,27 @@
         <van-button round type="primary" icon="plus" size="small" @click="onAddPerson">添加成员</van-button>
         <van-button round icon="list-switching" size="small" @click="toggleViewMode">列表视图</van-button>
       </div>
+
+      <!-- 血统线筛选栏 -->
+      <div v-if="viewMode === 'graph' && treeData.nodes.length > 0" class="lineage-filter-bar">
+        <div class="lineage-tabs">
+          <button
+            v-for="filter in LINEAGE_FILTERS"
+            :key="filter.type"
+            class="lineage-tab"
+            :class="{ active: lineageFilter === filter.type }"
+            :style="{
+              backgroundColor: lineageFilter === filter.type ? filter.borderColor : '#f3f4f6',
+              color: lineageFilter === filter.type ? '#fff' : filter.color,
+              borderColor: filter.borderColor
+            }"
+            @click="onLineageChange(filter.type)"
+          >
+            <span class="lineage-dot" :style="{ backgroundColor: lineageFilter === filter.type ? '#fff' : filter.borderColor }"></span>
+            {{ filter.label }}
+          </button>
+        </div>
+      </div>
     </div>
 
     <!-- 人员详情抽屉 -->
@@ -119,7 +140,8 @@ import { ref, onMounted, onUnmounted, nextTick, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { showToast, showLoadingToast, closeToast, showDialog } from 'vant'
 import { treeApi, personApi, groupApi } from '@/api'
-import type { TreeView, Person, PersonNode, PersonRelations } from '@/types'
+import type { TreeView, Person, PersonNode, PersonRelations, RelationshipEdge, LineageType } from '@/types'
+import { LINEAGE_FILTERS } from '@/types'
 import PersonListView from '@/components/PersonListView.vue'
 import PersonDetailDrawer from '@/components/PersonDetailDrawer.vue'
 import AddPersonWizard from '@/components/AddPersonWizard.vue'
@@ -130,6 +152,9 @@ const groupId = route.params.id as string
 
 // 视图模式: 'list' | 'graph'
 const viewMode = ref<'list' | 'graph'>('list')
+
+// 血统线筛选: 'BOTH' | 'FATHER_LINE' | 'MOTHER_LINE'
+const lineageFilter = ref<LineageType | 'BOTH'>('BOTH')
 
 // 数据
 const treeContainer = ref<HTMLDivElement>()
@@ -174,12 +199,162 @@ let offsetY = 0
 let isDragging = false
 let lastTouchX = 0
 let lastTouchY = 0
+const NODE_RADIUS = 30
+
+type PositionedPersonNode = PersonNode & { x: number; y: number }
+
+const drawSegment = (
+  canvasCtx: CanvasRenderingContext2D,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  style: string,
+  width: number,
+  dash: number[] = []
+) => {
+  canvasCtx.save()
+  canvasCtx.strokeStyle = style
+  canvasCtx.lineWidth = width
+  canvasCtx.setLineDash(dash)
+  canvasCtx.beginPath()
+  canvasCtx.moveTo(x1, y1)
+  canvasCtx.lineTo(x2, y2)
+  canvasCtx.stroke()
+  canvasCtx.restore()
+}
+
+const drawBundledParentEdges = (
+  canvasCtx: CanvasRenderingContext2D,
+  nodeMap: Map<string, PositionedPersonNode>,
+  parentLinks: Array<{ parentId: string; childId: string }>
+) => {
+  if (parentLinks.length === 0) return
+
+  const childParentMap = new Map<string, Set<string>>()
+  parentLinks.forEach(({ parentId, childId }) => {
+    if (!nodeMap.has(parentId) || !nodeMap.has(childId) || parentId === childId) return
+    if (!childParentMap.has(childId)) {
+      childParentMap.set(childId, new Set())
+    }
+    childParentMap.get(childId)!.add(parentId)
+  })
+
+  const familyGroups = new Map<string, { parentIds: string[]; childIds: string[] }>()
+  childParentMap.forEach((parentSet, childId) => {
+    const parentIds = Array.from(parentSet).sort()
+    const key = parentIds.join('|')
+    if (!familyGroups.has(key)) {
+      familyGroups.set(key, { parentIds, childIds: [] })
+    }
+    familyGroups.get(key)!.childIds.push(childId)
+  })
+
+  familyGroups.forEach(group => {
+    const parents = group.parentIds
+      .map(id => nodeMap.get(id))
+      .filter((node): node is PositionedPersonNode => Boolean(node))
+      .sort((a, b) => a.x - b.x)
+    const children = group.childIds
+      .map(id => nodeMap.get(id))
+      .filter((node): node is PositionedPersonNode => Boolean(node))
+      .sort((a, b) => a.x - b.x)
+
+    if (parents.length === 0 || children.length === 0) return
+
+    const avgParentY = parents.reduce((sum, p) => sum + p.y, 0) / parents.length
+    const avgChildY = children.reduce((sum, c) => sum + c.y, 0) / children.length
+    const direction = avgChildY >= avgParentY ? 1 : -1
+
+    const parentAnchorY = direction === 1
+      ? Math.max(...parents.map(p => p.y)) + NODE_RADIUS
+      : Math.min(...parents.map(p => p.y)) - NODE_RADIUS
+    const childAnchorY = direction === 1
+      ? Math.min(...children.map(c => c.y)) - NODE_RADIUS
+      : Math.max(...children.map(c => c.y)) + NODE_RADIUS
+
+    let parentBusY = parentAnchorY + direction * 20
+    let childBusY = childAnchorY - direction * 20
+    const gap = direction * (childBusY - parentBusY)
+    if (gap < 12) {
+      const midY = (parentAnchorY + childAnchorY) / 2
+      parentBusY = midY - direction * 6
+      childBusY = midY + direction * 6
+    }
+
+    const minParentX = Math.min(...parents.map(p => p.x))
+    const maxParentX = Math.max(...parents.map(p => p.x))
+    const parentCenterX = parents.reduce((sum, p) => sum + p.x, 0) / parents.length
+
+    parents.forEach(parent => {
+      drawSegment(
+        canvasCtx,
+        parent.x,
+        parent.y + direction * NODE_RADIUS,
+        parent.x,
+        parentBusY,
+        '#9e9e9e',
+        2
+      )
+    })
+
+    if (parents.length > 1) {
+      drawSegment(canvasCtx, minParentX, parentBusY, maxParentX, parentBusY, '#9e9e9e', 2)
+    }
+
+    drawSegment(canvasCtx, parentCenterX, parentBusY, parentCenterX, childBusY, '#9e9e9e', 2.2)
+
+    const minChildX = Math.min(...children.map(c => c.x))
+    const maxChildX = Math.max(...children.map(c => c.x))
+    if (children.length > 1) {
+      drawSegment(canvasCtx, minChildX, childBusY, maxChildX, childBusY, '#9e9e9e', 2)
+    }
+
+    children.forEach(child => {
+      if (children.length === 1 && Math.abs(child.x - parentCenterX) > 1) {
+        drawSegment(canvasCtx, parentCenterX, childBusY, child.x, childBusY, '#9e9e9e', 2)
+      }
+      drawSegment(
+        canvasCtx,
+        child.x,
+        childBusY,
+        child.x,
+        child.y - direction * NODE_RADIUS,
+        '#9e9e9e',
+        2
+      )
+    })
+  })
+}
+
+const drawNonParentEdges = (
+  canvasCtx: CanvasRenderingContext2D,
+  nodeMap: Map<string, PositionedPersonNode>,
+  edges: RelationshipEdge[]
+) => {
+  edges.forEach(edge => {
+    const fromNode = nodeMap.get(edge.fromPersonId)
+    const toNode = nodeMap.get(edge.toPersonId)
+    if (!fromNode || !toNode) return
+
+    if (edge.type === 'SPOUSE') {
+      drawSegment(canvasCtx, fromNode.x, fromNode.y, toNode.x, toNode.y, '#e28cb5', 2.2)
+      return
+    }
+    if (edge.type === 'SIBLING') {
+      drawSegment(canvasCtx, fromNode.x, fromNode.y, toNode.x, toNode.y, '#90a4c8', 1.4, [6, 4])
+      return
+    }
+    drawSegment(canvasCtx, fromNode.x, fromNode.y, toNode.x, toNode.y, '#b0b0b0', 1.6)
+  })
+}
 
 // 获取家谱数据
 const fetchTreeData = async () => {
   loading.value = true
   try {
-    const data = await treeApi.getTreeView(groupId, undefined, 3)
+    const lineageParam = lineageFilter.value === 'BOTH' ? undefined : lineageFilter.value
+    const data = await treeApi.getTreeView(groupId, undefined, 3, lineageParam)
     treeData.value = data
     if (viewMode.value === 'graph') {
       nextTick(() => {
@@ -240,7 +415,8 @@ const onFocusMe = () => {
 const onSetFocus = async (personId: string) => {
   loading.value = true
   try {
-    const data = await treeApi.getTreeView(groupId, personId, 3)
+    const lineageParam = lineageFilter.value === 'BOTH' ? undefined : lineageFilter.value
+    const data = await treeApi.getTreeView(groupId, personId, 3, lineageParam)
     treeData.value = data
     if (viewMode.value === 'graph') {
       renderTree()
@@ -251,6 +427,12 @@ const onSetFocus = async (personId: string) => {
   } finally {
     loading.value = false
   }
+}
+
+// 切换血统线筛选
+const onLineageChange = async (lineage: LineageType | 'BOTH') => {
+  lineageFilter.value = lineage
+  await fetchTreeData()
 }
 
 // 从抽屉设置焦点
@@ -389,7 +571,8 @@ const selectPerson = (person: Person) => {
     birthDate: person.birthDate,
     deathDate: person.deathDate,
     primaryPhotoUrl: person.primaryPhotoUrl,
-    generation: 0
+    generation: 0,
+    lineageType: 'SELF'
   }
   onPersonClick(personNode)
   showSearch.value = false
@@ -433,33 +616,80 @@ const renderTree = () => {
   ctx.translate(offsetX, offsetY)
   ctx.scale(scale, scale)
 
-  ctx.strokeStyle = '#999'
-  ctx.lineWidth = 2
+  const positionedNodes: PositionedPersonNode[] = treeData.value.nodes.map(node => ({
+    ...node,
+    x: node.x ?? 0,
+    y: node.y ?? 0
+  }))
+  const nodeMap = new Map(positionedNodes.map(node => [node.id, node]))
+  const parentLinks: Array<{ parentId: string; childId: string }> = []
+  const nonParentEdges: RelationshipEdge[] = []
+
   treeData.value.edges.forEach(edge => {
-    const fromNode = treeData.value.nodes.find(n => n.id === edge.fromPersonId)
-    const toNode = treeData.value.nodes.find(n => n.id === edge.toPersonId)
-    if (fromNode && toNode) {
-      ctx!.beginPath()
-      ctx!.moveTo(fromNode.x || 0, fromNode.y || 0)
-      ctx!.lineTo(toNode.x || 0, toNode.y || 0)
-      ctx!.stroke()
+    if (edge.type === 'PARENT') {
+      parentLinks.push({ parentId: edge.fromPersonId, childId: edge.toPersonId })
+      return
     }
+    if (edge.type === 'CHILD') {
+      parentLinks.push({ parentId: edge.toPersonId, childId: edge.fromPersonId })
+      return
+    }
+    nonParentEdges.push(edge)
   })
 
-  treeData.value.nodes.forEach(node => {
-    const x = node.x ?? 0
-    const y = node.y ?? 0
+  drawBundledParentEdges(ctx, nodeMap, parentLinks)
+  drawNonParentEdges(ctx, nodeMap, nonParentEdges)
+
+  positionedNodes.forEach(node => {
+    const x = node.x
+    const y = node.y
+
+    // 根据血统线确定颜色
+    const getNodeColors = (lineageType: LineageType) => {
+      switch (lineageType) {
+        case 'FATHER_LINE':
+          return { fill: '#dbeafe', stroke: '#2563eb', text: '#1e40af' }
+        case 'MOTHER_LINE':
+          return { fill: '#fce7f3', stroke: '#ec4899', text: '#be185d' }
+        case 'SELF':
+          return { fill: '#fef3c7', stroke: '#f59e0b', text: '#92400e' }
+        default:
+          return { fill: '#f3f4f6', stroke: '#9ca3af', text: '#4b5563' }
+      }
+    }
+
+    const colors = getNodeColors(node.lineageType)
+
     ctx!.beginPath()
-    ctx!.arc(x, y, 30, 0, Math.PI * 2)
-    ctx!.fillStyle = node.gender === 'MALE' ? '#e3f2fd' : '#fce4ec'
+    ctx!.arc(x, y, NODE_RADIUS, 0, Math.PI * 2)
+    ctx!.fillStyle = colors.fill
     ctx!.fill()
-    ctx!.strokeStyle = node.gender === 'MALE' ? '#2196f3' : '#e91e63'
+    ctx!.strokeStyle = colors.stroke
     ctx!.lineWidth = 3
     ctx!.stroke()
-    ctx!.fillStyle = '#333'
-    ctx!.font = '14px sans-serif'
+
+    // 绘制性别图标（小圆点）
+    ctx!.beginPath()
+    ctx!.arc(x + NODE_RADIUS - 8, y - NODE_RADIUS + 8, 6, 0, Math.PI * 2)
+    ctx!.fillStyle = node.gender === 'MALE' ? '#3b82f6' : (node.gender === 'FEMALE' ? '#ec4899' : '#9ca3af')
+    ctx!.fill()
+    ctx!.strokeStyle = '#fff'
+    ctx!.lineWidth = 1.5
+    ctx!.stroke()
+
+    // 绘制名字
+    ctx!.fillStyle = colors.text
+    ctx!.font = 'bold 13px sans-serif'
     ctx!.textAlign = 'center'
     ctx!.fillText(node.fullName, x, y + 50)
+
+    // 绘制血统线标签（小字）
+    if (node.lineageType !== 'SELF' && node.lineageType !== 'UNKNOWN') {
+      ctx!.fillStyle = colors.stroke
+      ctx!.font = '10px sans-serif'
+      const label = node.lineageType === 'FATHER_LINE' ? '父系' : '母系'
+      ctx!.fillText(label, x, y + 64)
+    }
   })
 
   ctx.restore()
@@ -563,15 +793,61 @@ onUnmounted(() => {
 
 .graph-actions {
   position: fixed;
-  bottom: 0;
+  bottom: 56px;
   left: 0;
   right: 0;
-  padding: 12px 16px;
-  padding-bottom: calc(12px + env(safe-area-inset-bottom));
+  padding: 8px 16px;
   background: white;
   display: flex;
   justify-content: space-around;
   box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.08);
   z-index: 100;
+}
+
+.lineage-filter-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 8px 16px;
+  padding-bottom: calc(8px + env(safe-area-inset-bottom));
+  background: white;
+  box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.12);
+  z-index: 101;
+}
+
+.lineage-tabs {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+}
+
+.lineage-tab {
+  flex: 1;
+  max-width: 100px;
+  padding: 8px 12px;
+  border: 1px solid;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  background: #f3f4f6;
+  border-color: #d1d5db;
+  color: #6b7280;
+}
+
+.lineage-tab.active {
+  font-weight: 600;
+}
+
+.lineage-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
 }
 </style>

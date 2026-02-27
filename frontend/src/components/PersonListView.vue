@@ -99,6 +99,12 @@
                   <span v-if="person.id === focusPersonId" class="tag focus-tag">
                     <van-icon name="aim" /> 当前焦点
                   </span>
+                  <span v-if="person.lineageType === 'FATHER_LINE'" class="tag father-line-tag">
+                    <van-icon name="guide-o" /> 父系
+                  </span>
+                  <span v-if="person.lineageType === 'MOTHER_LINE'" class="tag mother-line-tag">
+                    <van-icon name="guide-o" /> 母系
+                  </span>
                 </div>
               </div>
 
@@ -651,6 +657,16 @@ const onLoad = () => {
 .focus-tag {
   background: linear-gradient(135deg, #2196f3, #1976d2);
   color: white;
+}
+
+.father-line-tag {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.mother-line-tag {
+  background: #fce7f3;
+  color: #be185d;
 }
 
 /* 箭头 */

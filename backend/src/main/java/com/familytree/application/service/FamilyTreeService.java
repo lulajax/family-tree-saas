@@ -3,6 +3,7 @@ package com.familytree.application.service;
 import com.familytree.application.dto.PersonNodeDTO;
 import com.familytree.application.dto.RelationshipEdgeDTO;
 import com.familytree.application.dto.TreeViewDTO;
+import com.familytree.domain.LineageType;
 import com.familytree.domain.Person;
 import com.familytree.domain.Photo;
 import com.familytree.domain.Relationship;
@@ -23,9 +24,15 @@ public class FamilyTreeService {
     private final PersonRepository personRepository;
     private final RelationshipRepository relationshipRepository;
     private final PhotoRepository photoRepository;
-    
+    private final LineageCalculator lineageCalculator;
+
     @Transactional(readOnly = true)
     public TreeViewDTO getTreeView(UUID groupId, UUID focusPersonId, int depth) {
+        return getTreeView(groupId, focusPersonId, depth, null);
+    }
+
+    @Transactional(readOnly = true)
+    public TreeViewDTO getTreeView(UUID groupId, UUID focusPersonId, int depth, LineageType lineageFilter) {
         // 如果没有指定焦点人物，获取该家族第一个人物
         if (focusPersonId == null) {
             List<Person> persons = personRepository.findByGroupId(groupId);
@@ -87,6 +94,26 @@ public class FamilyTreeService {
         // 获取所有人物信息
         List<Person> persons = personRepository.findAllById(personIds);
 
+        // 构建性别映射（用于血统线计算）
+        Map<UUID, Person.Gender> genderMap = persons.stream()
+            .collect(Collectors.toMap(Person::getId, p -> p.getGender() != null ? p.getGender() : Person.Gender.UNKNOWN));
+
+        // 计算血统线
+        Map<UUID, LineageType> lineageMap = lineageCalculator.calculateLineageMap(
+            focusPersonId, allRelationships, genderMap);
+
+        // 根据血统线筛选人物（如果指定了筛选条件）
+        final Set<UUID> filteredPersonIds;
+        if (lineageFilter != null && lineageFilter != LineageType.UNKNOWN) {
+            filteredPersonIds = lineageCalculator.filterByLineage(
+                new HashSet<>(personIds), lineageMap, lineageFilter);
+            persons = persons.stream()
+                .filter(p -> filteredPersonIds.contains(p.getId()))
+                .collect(Collectors.toList());
+        } else {
+            filteredPersonIds = new HashSet<>(personIds);
+        }
+
         // 按代分组并排序（用于布局计算）
         Map<Integer, List<Person>> personsByGeneration = persons.stream()
             .collect(Collectors.groupingBy(p -> personGeneration.getOrDefault(p.getId(), 0)));
@@ -94,14 +121,19 @@ public class FamilyTreeService {
         // 计算节点坐标
         Map<UUID, double[]> coordinates = calculateTreeLayout(personsByGeneration, personGeneration, allRelationships);
 
-        // 构建节点（包含坐标）
+        // 构建节点（包含坐标和血统线信息）
         List<PersonNodeDTO> nodes = persons.stream()
-            .map(p -> toNodeDTO(p, personGeneration.getOrDefault(p.getId(), 0), coordinates.getOrDefault(p.getId(), new double[]{0, 0})))
+            .map(p -> toNodeDTO(
+                p,
+                personGeneration.getOrDefault(p.getId(), 0),
+                coordinates.getOrDefault(p.getId(), new double[]{0, 0}),
+                lineageMap.getOrDefault(p.getId(), LineageType.UNKNOWN)))
             .collect(Collectors.toList());
 
-        // 构建边（只包含在人物集合内的关系）
+        // 构建边（只包含在筛选后的人物集合内的关系）
         List<RelationshipEdgeDTO> edges = allRelationships.stream()
-            .filter(r -> personIds.contains(r.getFromPersonId()) && personIds.contains(r.getToPersonId()))
+            .filter(r -> filteredPersonIds.contains(r.getFromPersonId())
+                && filteredPersonIds.contains(r.getToPersonId()))
             .map(this::toEdgeDTO)
             .collect(Collectors.toList());
 
@@ -109,6 +141,7 @@ public class FamilyTreeService {
             .focusPersonId(focusPersonId)
             .focusPersonName(focusPerson.getFullName())
             .depth(depth)
+            .filterLineageType(lineageFilter)
             .nodes(nodes)
             .edges(edges)
             .build();
@@ -193,13 +226,20 @@ public class FamilyTreeService {
                     } else {
                         x = (i - (count - 1) / 2.0) * HORIZONTAL_SPACING;
                     }
-                } else if (!parents.isEmpty() && coordinates.containsKey(parents.get(0))) {
-                    // 有父母但没有子女：在父母附近偏移
-                    double parentX = coordinates.get(parents.get(0))[0];
-                    // 根据在父母列表中的索引决定左右偏移
-                    int parentIndex = parents.indexOf(person.getId());
-                    double offset = (parentIndex % 2 == 0 ? 1 : -1) * (parentIndex + 1) * HORIZONTAL_SPACING / 2;
-                    x = parentX + offset;
+                } else if (!parents.isEmpty()) {
+                    // 有父母但没有子女：以父母X坐标中心为锚点做轻微分散
+                    double parentX = parents.stream()
+                        .filter(coordinates::containsKey)
+                        .mapToDouble(parentId -> coordinates.get(parentId)[0])
+                        .average()
+                        .orElse(Double.NaN);
+
+                    if (!Double.isNaN(parentX)) {
+                        double offset = (i - (count - 1) / 2.0) * HORIZONTAL_SPACING * 0.6;
+                        x = parentX + offset;
+                    } else {
+                        x = (i - (count - 1) / 2.0) * HORIZONTAL_SPACING;
+                    }
                 } else {
                     // 没有关联关系：均匀分布
                     x = (i - (count - 1) / 2.0) * HORIZONTAL_SPACING;
@@ -225,7 +265,12 @@ public class FamilyTreeService {
         List<Person> sorted = new ArrayList<>(persons);
         sorted.sort(Comparator.comparingDouble(p -> coordinates.get(p.getId())[0]));
 
-        // 检测并调整重叠
+        double originalCenterX = sorted.stream()
+            .mapToDouble(p -> coordinates.get(p.getId())[0])
+            .average()
+            .orElse(0.0);
+
+        // 顺序约束：保证任意相邻节点最小间距 >= minSpacing
         for (int i = 1; i < sorted.size(); i++) {
             Person prev = sorted.get(i - 1);
             Person curr = sorted.get(i);
@@ -234,9 +279,19 @@ public class FamilyTreeService {
             double currX = coordinates.get(curr.getId())[0];
 
             if (currX - prevX < minSpacing) {
-                double adjust = (minSpacing - (currX - prevX)) / 2 + 5; // 5px 额外间隔
-                coordinates.get(prev.getId())[0] -= adjust;
-                coordinates.get(curr.getId())[0] += adjust;
+                coordinates.get(curr.getId())[0] = prevX + minSpacing;
+            }
+        }
+
+        // 回调到原中心点，避免整层向单侧漂移
+        double adjustedCenterX = sorted.stream()
+            .mapToDouble(p -> coordinates.get(p.getId())[0])
+            .average()
+            .orElse(0.0);
+        double recenterShift = originalCenterX - adjustedCenterX;
+        if (Math.abs(recenterShift) > 1e-6) {
+            for (Person person : sorted) {
+                coordinates.get(person.getId())[0] += recenterShift;
             }
         }
     }
@@ -246,7 +301,7 @@ public class FamilyTreeService {
         List<Person> ancestors = personRepository.findAncestorsWithPath(personId);
 
         return ancestors.stream()
-            .map(p -> toNodeDTO(p, 0, new double[]{0, 0}))
+            .map(p -> toNodeDTO(p, 0, new double[]{0, 0}, LineageType.UNKNOWN))
             .collect(Collectors.toList());
     }
 
@@ -255,11 +310,11 @@ public class FamilyTreeService {
         List<Person> descendants = personRepository.findDescendants(personId, generations);
 
         return descendants.stream()
-            .map(p -> toNodeDTO(p, 0, new double[]{0, 0}))
+            .map(p -> toNodeDTO(p, 0, new double[]{0, 0}, LineageType.UNKNOWN))
             .collect(Collectors.toList());
     }
     
-    private PersonNodeDTO toNodeDTO(Person person, int generation, double[] coords) {
+    private PersonNodeDTO toNodeDTO(Person person, int generation, double[] coords, LineageType lineageType) {
         String primaryPhotoUrl = photoRepository.findByPersonIdAndIsPrimaryTrue(person.getId())
             .map(Photo::getUrl)
             .orElse(null);
@@ -276,6 +331,7 @@ public class FamilyTreeService {
             .generation(generation)
             .x(coords[0])
             .y(coords[1])
+            .lineageType(lineageType)
             .build();
     }
     

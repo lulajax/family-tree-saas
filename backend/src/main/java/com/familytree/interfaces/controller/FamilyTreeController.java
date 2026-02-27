@@ -4,7 +4,9 @@ import com.familytree.application.dto.PersonNodeDTO;
 import com.familytree.application.dto.TreeViewDTO;
 import com.familytree.application.service.FamilyTreeService;
 import com.familytree.application.dto.response.ApiResponse;
+import com.familytree.domain.LineageType;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
@@ -27,8 +29,11 @@ public class FamilyTreeController {
     public ApiResponse<TreeViewDTO> getTreeView(
             @PathVariable UUID groupId,
             @RequestParam(required = false) UUID focusPersonId,
-            @RequestParam(defaultValue = "3") int depth) {
-        return ApiResponse.success(familyTreeService.getTreeView(groupId, focusPersonId, depth));
+            @RequestParam(defaultValue = "3") int depth,
+            @RequestParam(required = false)
+            @Parameter(description = "血统线筛选: FATHER_LINE=父系, MOTHER_LINE=母系, 不填=全部")
+            LineageType lineage) {
+        return ApiResponse.success(familyTreeService.getTreeView(groupId, focusPersonId, depth, lineage));
     }
     
     @GetMapping("/persons/{personId}/ancestors")

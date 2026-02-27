@@ -16,7 +16,10 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -131,17 +134,22 @@ public class PersonService {
         List<UUID> parentIds = relationships.stream()
             .filter(r -> r.getType() == Relationship.RelationshipType.PARENT && r.getToPersonId().equals(person.getId()))
             .map(Relationship::getFromPersonId)
+            .distinct()
             .collect(Collectors.toList());
         
         List<UUID> childrenIds = relationships.stream()
             .filter(r -> r.getType() == Relationship.RelationshipType.PARENT && r.getFromPersonId().equals(person.getId()))
             .map(Relationship::getToPersonId)
+            .distinct()
             .collect(Collectors.toList());
         
         List<UUID> spouseIds = relationships.stream()
             .filter(r -> r.getType() == Relationship.RelationshipType.SPOUSE)
             .map(r -> r.getFromPersonId().equals(person.getId()) ? r.getToPersonId() : r.getFromPersonId())
+            .distinct()
             .collect(Collectors.toList());
+
+        List<UUID> siblingIds = resolveSiblingIds(person.getGroupId(), person.getId(), parentIds, relationships);
         
         String currentSpouseName = null;
         if (person.getCurrentSpouseId() != null) {
@@ -167,6 +175,7 @@ public class PersonService {
             .parentIds(parentIds)
             .childrenIds(childrenIds)
             .spouseIds(spouseIds)
+            .siblingIds(siblingIds)
             .createdAt(person.getCreatedAt())
             .updatedAt(person.getUpdatedAt())
             .version(person.getVersion())
@@ -207,32 +216,24 @@ public class PersonService {
         List<UUID> parentIds = relationships.stream()
             .filter(r -> r.getType() == Relationship.RelationshipType.PARENT && r.getToPersonId().equals(personId))
             .map(Relationship::getFromPersonId)
+            .distinct()
             .collect(Collectors.toList());
 
         // 获取子女ID
         List<UUID> childrenIds = relationships.stream()
             .filter(r -> r.getType() == Relationship.RelationshipType.PARENT && r.getFromPersonId().equals(personId))
             .map(Relationship::getToPersonId)
+            .distinct()
             .collect(Collectors.toList());
 
         // 获取配偶ID
         List<UUID> spouseIds = relationships.stream()
             .filter(r -> r.getType() == Relationship.RelationshipType.SPOUSE)
             .map(r -> r.getFromPersonId().equals(personId) ? r.getToPersonId() : r.getFromPersonId())
-            .collect(Collectors.toList());
-
-        // 获取兄弟姐妹：通过共同的父母
-        List<UUID> siblingIds = parentIds.stream()
-            .flatMap(parentId -> {
-                // 找到该父母的所有子女
-                return relationships.stream()
-                    .filter(r -> r.getType() == Relationship.RelationshipType.PARENT
-                        && r.getFromPersonId().equals(parentId)
-                        && !r.getToPersonId().equals(personId))
-                    .map(Relationship::getToPersonId);
-            })
             .distinct()
             .collect(Collectors.toList());
+
+        List<UUID> siblingIds = resolveSiblingIds(person.getGroupId(), personId, parentIds, relationships);
 
         // 构建返回DTO
         Photo primaryPhoto = photoRepository.findByPersonIdAndIsPrimaryTrue(personId).orElse(null);
@@ -270,5 +271,33 @@ public class PersonService {
                     .build();
             })
             .collect(Collectors.toList());
+    }
+
+    private List<UUID> resolveSiblingIds(
+            UUID groupId,
+            UUID personId,
+            List<UUID> parentIds,
+            List<Relationship> directRelationships) {
+
+        Set<UUID> siblingIds = new LinkedHashSet<>();
+
+        // 显式兄弟姐妹关系
+        directRelationships.stream()
+            .filter(r -> r.getType() == Relationship.RelationshipType.SIBLING)
+            .map(r -> r.getFromPersonId().equals(personId) ? r.getToPersonId() : r.getFromPersonId())
+            .filter(id -> !id.equals(personId))
+            .forEach(siblingIds::add);
+
+        // 通过共同父母推导兄弟姐妹
+        for (UUID parentId : parentIds) {
+            relationshipRepository.findByGroupIdAndFromPersonIdAndType(
+                    groupId, parentId, Relationship.RelationshipType.PARENT)
+                .stream()
+                .map(Relationship::getToPersonId)
+                .filter(id -> !id.equals(personId))
+                .forEach(siblingIds::add);
+        }
+
+        return new ArrayList<>(siblingIds);
     }
 }

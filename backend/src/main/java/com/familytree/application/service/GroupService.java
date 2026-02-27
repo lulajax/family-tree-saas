@@ -8,13 +8,16 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
 public class GroupService {
+    private static final int MAX_PARENT_COUNT = 2;
 
     private final GroupRepository groupRepository;
     private final GroupMemberRepository groupMemberRepository;
@@ -164,6 +167,8 @@ public class GroupService {
             throw new RuntimeException("关系已存在");
         }
 
+        validateConsistencyBeforeCreate(groupId, normalizedFromPersonId, normalizedToPersonId, finalType);
+
         // 创建关系
         Relationship relationship = Relationship.builder()
                 .groupId(groupId)
@@ -174,7 +179,112 @@ public class GroupService {
                 .endDate(request.getEndDate())
                 .build();
 
-        return relationshipRepository.save(relationship);
+        Relationship savedRelationship = relationshipRepository.save(relationship);
+
+        // 兄弟姐妹关系建立后，自动补齐双方已知父母关系，保证父节点可关联到新兄弟节点
+        if (finalType == Relationship.RelationshipType.SIBLING) {
+            synchronizeSiblingParents(groupId, normalizedFromPersonId, normalizedToPersonId);
+        } else if (finalType == Relationship.RelationshipType.PARENT) {
+            // 新增父母关系后，若子女已有兄弟姐妹关系，则同步该父母到兄弟姐妹
+            synchronizeParentToSiblings(groupId, normalizedFromPersonId, normalizedToPersonId);
+        }
+
+        return savedRelationship;
+    }
+
+    private void validateConsistencyBeforeCreate(
+            UUID groupId,
+            UUID normalizedFromPersonId,
+            UUID normalizedToPersonId,
+            Relationship.RelationshipType finalType) {
+        if (finalType == Relationship.RelationshipType.SIBLING) {
+            validateSiblingParentCompatibility(groupId, normalizedFromPersonId, normalizedToPersonId);
+        } else if (finalType == Relationship.RelationshipType.PARENT) {
+            validateParentLimitForChildAndSiblings(groupId, normalizedFromPersonId, normalizedToPersonId);
+        }
+    }
+
+    private void validateSiblingParentCompatibility(UUID groupId, UUID personAId, UUID personBId) {
+        Set<UUID> personAParents = loadParentIds(groupId, personAId);
+        Set<UUID> personBParents = loadParentIds(groupId, personBId);
+
+        Set<UUID> mergedParents = new HashSet<>(personAParents);
+        mergedParents.addAll(personBParents);
+        if (mergedParents.size() > MAX_PARENT_COUNT) {
+            throw new RuntimeException("无法建立兄弟姐妹关系：双方父母信息合并后超过2位");
+        }
+    }
+
+    private void validateParentLimitForChildAndSiblings(UUID groupId, UUID parentId, UUID childId) {
+        ensureParentCapacity(groupId, childId, parentId);
+
+        Set<UUID> siblingIds = loadSiblingIds(groupId, childId);
+        for (UUID siblingId : siblingIds) {
+            ensureParentCapacity(groupId, siblingId, parentId);
+        }
+    }
+
+    private void ensureParentCapacity(UUID groupId, UUID childId, UUID parentId) {
+        Set<UUID> parentIds = loadParentIds(groupId, childId);
+        if (!parentIds.contains(parentId) && parentIds.size() >= MAX_PARENT_COUNT) {
+            throw new RuntimeException("父母数量不能超过2位，关系同步失败");
+        }
+    }
+
+    private Set<UUID> loadParentIds(UUID groupId, UUID childId) {
+        return relationshipRepository
+            .findByGroupIdAndToPersonIdAndType(groupId, childId, Relationship.RelationshipType.PARENT)
+            .stream()
+            .map(Relationship::getFromPersonId)
+            .collect(Collectors.toCollection(HashSet::new));
+    }
+
+    private Set<UUID> loadSiblingIds(UUID groupId, UUID personId) {
+        return relationshipRepository.findByPersonId(groupId, personId).stream()
+            .filter(r -> r.getType() == Relationship.RelationshipType.SIBLING)
+            .map(r -> r.getFromPersonId().equals(personId) ? r.getToPersonId() : r.getFromPersonId())
+            .collect(Collectors.toCollection(HashSet::new));
+    }
+
+    private void synchronizeSiblingParents(UUID groupId, UUID personAId, UUID personBId) {
+        Set<UUID> personAParents = loadParentIds(groupId, personAId);
+        Set<UUID> personBParents = loadParentIds(groupId, personBId);
+
+        createMissingParentLinks(groupId, personAParents, personBId);
+        createMissingParentLinks(groupId, personBParents, personAId);
+    }
+
+    private void createMissingParentLinks(UUID groupId, Set<UUID> parentIds, UUID childId) {
+        for (UUID parentId : parentIds) {
+            if (parentId.equals(childId)) {
+                continue;
+            }
+
+            ensureParentCapacity(groupId, childId, parentId);
+
+            boolean exists = relationshipRepository
+                .findByGroupIdAndFromPersonIdAndToPersonIdAndType(
+                    groupId, parentId, childId, Relationship.RelationshipType.PARENT)
+                .isPresent();
+            if (exists) {
+                continue;
+            }
+
+            relationshipRepository.save(Relationship.builder()
+                .groupId(groupId)
+                .fromPersonId(parentId)
+                .toPersonId(childId)
+                .type(Relationship.RelationshipType.PARENT)
+                .build());
+        }
+    }
+
+    private void synchronizeParentToSiblings(UUID groupId, UUID parentId, UUID childId) {
+        Set<UUID> siblingIds = loadSiblingIds(groupId, childId);
+
+        for (UUID siblingId : siblingIds) {
+            createMissingParentLinks(groupId, Set.of(parentId), siblingId);
+        }
     }
 
     private GroupDTO toDTO(Group group) {
